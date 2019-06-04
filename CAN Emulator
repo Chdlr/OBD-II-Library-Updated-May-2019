@@ -1,0 +1,135 @@
+
+/* CAN/OBD-II EMULATOR SKETCH
+ * JARC - Data Logger Project
+ * Revised 1/31/19
+ * NOTE: Current version of Seeed Studio CAN BUS uses pin 9
+ */
+#include <mcp_can.h>                                 // Seeed Studio CAN-BUS library
+#include <SPI.h>
+MCP_CAN CAN(9);                                      // Set CS to pin 9
+
+unsigned long int canId = 0x000;                     // Initialize "sender" can node ID
+
+unsigned char len = 0;                               // Length of received message
+unsigned char buf[8];                                // Data Buffer
+String message="";                                   // Create string of message to decide which message to send
+
+void setup() {
+  Serial.begin(115200);                             // Set serial baud rate for 115200 kbs
+
+START_INIT:
+
+    if(CAN_OK == CAN.begin(CAN_500KBPS))           // init can bus : baudrate = 500k
+    {
+        Serial.println("CAN BUS Shield init ok!");
+    }
+    else
+    {
+        Serial.println("CAN BUS Shield init fail");
+        Serial.println("Init CAN BUS Shield again");
+        delay(100);
+        goto START_INIT;
+    }
+}
+
+void loop()
+{
+    /*Read throttle potentiometer and convert*/
+    int throttleValue = analogRead(A0);
+    throttleValue = map(throttleValue, 0, 1023, 0, 255);
+
+    /*Read speed potentiometer and convert*/
+    int speedValue = analogRead(A1); // Speed
+    speedValue = map(speedValue, 0, 1023, 0, 255);
+
+    /*Read RPM potentiometer and convert*/
+    int rpmValue = analogRead(A2); // RPM
+
+    /*Debug: Analog value converted by arduino*/
+    Serial.println("Analog Value");
+    Serial.println(rpmValue);
+    
+    rpmValue = map(rpmValue, 0, 1023, 0, 65535);
+    byte firstByte = highByte(rpmValue);
+    byte lastByte = lowByte(rpmValue);
+
+    /*DEBUG: RPM PID sends 2 bytes for data*/
+    Serial.println(rpmValue);
+    Serial.print("First:");
+    Serial.println(firstByte);
+    Serial.print("Last:");
+    Serial.println(lastByte);
+
+
+    /*Read engine load potentiometer and convert*/
+    int engineLoadValue = analogRead(A3); // Engine Load
+    engineLoadValue = map(engineLoadValue, 0, 1023, 0, 255);
+    
+    
+    // CAN data syntax:{message size in #bytes, PID received command(0x41), PID code, data values, erroneous data};
+    //Required PIDS to create PID Map on data logger
+    unsigned char SupportedPID[7] =       {6, 65, 0 ,190 ,63, 184, 19}; //Extracted from 2004 Mazda 3, 2.3L
+
+    //VIN PID
+    /*unsigned char vin1[8] =               {16, 20, 73, 2, 1, 74, 77, 49}; 
+    unsigned char vin2[8] =               {33, 66, 75, 51, 52, 51, 56, 52};
+    unsigned char vin3[8] =               {34, 49, 49, 49, 50, 52, 50, 53};*/
+    
+    //SENSOR Data Arrays
+    unsigned char rpm[7] =                {4, 65, 12, firstByte, lastByte, 0, 0};
+    unsigned char carSpeed[7] =             {4, 65, 13, speedValue, 0, 0, 0};
+    unsigned char throttle[7] =           {4, 65, 17, throttleValue, 0, 0, 0};
+    unsigned char engineLoad[7] =         {4, 65, 4, engineLoadValue, 0, 0, 0};
+
+    //Below are supported PIDS needed to initialize the data logger quicker
+    unsigned char intakeTemp[7] =         {4, 65, 15, 30, 0, 0 ,0};
+    unsigned char fuelRate[7] =           {4, 65, 94, 100, 0,0,0};
+    unsigned char coolantTemp[7] =        {4, 65, 5, 100, 0, 0, 0};
+    unsigned char intakePressure[7] =     {4, 65, 11, 100, 0, 0, 0};
+    unsigned char timingAdvance[7]=      {4, 65, 14, 100, 0, 0, 0};
+    unsigned char mafRate[7]=             {4, 65, 16, 100, 100, 0, 0};
+    
+    if(CAN_MSGAVAIL == CAN.checkReceive())          // Check for any PID requests
+    {
+      //Read the CAN message and save the message
+      CAN.readMsgBuf(&len, buf); 
+        canId = CAN.getCanId();
+        Serial.print("<");                  //Print to serial monitor received CAN ID for debugging
+        Serial.print(canId,HEX);                    
+        Serial.print(">");
+        
+
+        for(int i = 0; i<len; i++)
+        {  
+          message = message + buf[i] + ","; // Create string of message
+        }
+        Serial.println(message);             // Print to serial monitor requested PID
+        
+        //sendMsgBuf parameters:{requested CanID, mode, message length, data)}
+        //IDS start at 0x8 higher than ID query i.e. 0x7DF(sender node) -> 0x7E8(requested node)
+        
+        //Send Supported PIDs
+        if(message=="2,1,0,0,0,0,0,0,") {CAN.sendMsgBuf(0x7E8, 0, 7, SupportedPID);}
+
+       /* //Send emulated VIN NOTE: Does Not Currently Work
+        if(message="2,9,2,0,0,0,0,0,")  {CAN.sendMsgBuf(0x7E8, 1, 8, vin1);
+                                         CAN.sendMsgBuf(0x7E8, 1, 8, vin2);
+                                         CAN.sendMsgBuf(0x7E8, 1, 8, vin3);}*/
+        
+        //Send Sensor Data
+        if(message=="2,1,4,0,0,0,0,0,") {CAN.sendMsgBuf(0x7E8, 0, 7, engineLoad);}
+        if(message=="2,1,12,0,0,0,0,0,"){CAN.sendMsgBuf(0x7E8, 0, 7, rpm);}
+        if(message=="2,1,13,0,0,0,0,0,"){CAN.sendMsgBuf(0x7E8, 0, 7, carSpeed);}
+        if(message=="2,1,17,0,0,0,0,0,") {CAN.sendMsgBuf(0x7E8, 0, 7, throttle);}
+        
+        //Below are PIDS needed to quicken OBD initalization
+        if(message=="2,1,15,0,0,0,0,0,") {CAN.sendMsgBuf(0x7E8, 0, 7, intakeTemp);}
+        if(message=="2,1,94,0,0,0,0,0,") {CAN.sendMsgBuf(0x7E8, 0, 7, fuelRate);}
+        if(message=="2,1,5,0,0,0,0,0,") {CAN.sendMsgBuf(0x7E8, 0, 7, coolantTemp);}
+        if(message=="2,1,11,0,0,0,0,0,") {CAN.sendMsgBuf(0x7E8, 0, 7, intakePressure);}
+        if(message=="2,1,14,0,0,0,0,0,") {CAN.sendMsgBuf(0x7E8, 0, 7, timingAdvance);}
+        if(message=="2,1,16,0,0,0,0,0,") {CAN.sendMsgBuf(0x7E8, 0, 7, mafRate);}
+
+        message="";                        // Reset the stored message
+    }
+}
